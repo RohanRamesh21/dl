@@ -208,7 +208,7 @@ class EncoderDecoderModel(Module):
     
     def decode_step(self, decoder_input, encoder_outputs, state):
         """
-        Single decoding step (for inference)
+        Single decoding step (for inference) with proper state tracking
         
         Args:
             decoder_input: Current decoder input token (batch_size, 1)
@@ -219,16 +219,35 @@ class EncoderDecoderModel(Module):
             output: Output logits (batch_size, 1, tgt_vocab_size)
             new_state: New decoder state tuple (state_h, state_c)
         """
-        # Use decoder but only for single step
-        output = self.decoder(decoder_input, encoder_outputs, state)
+        # Embed input
+        embedded = self.decoder.embedding(decoder_input)
         
-        # For inference, we need to update the state manually
-        # This is a simplified version - in practice you'd need to track LSTM states properly
-        return output, state
+        # LSTM step with proper state update
+        lstm_output, new_states = self.decoder.lstm(embedded, initial_state=[state])
+        new_state = new_states[0]  # Extract (h, c) from list
+        
+        # Apply attention
+        context_vector, _ = self.decoder.attention(
+            query=lstm_output,
+            value=encoder_outputs,
+            key=encoder_outputs
+        )
+        
+        # Concatenate context vector and LSTM output
+        concatenated = torch.cat([context_vector.data, lstm_output.data], dim=-1)
+        concatenated = Tensor(concatenated, requires_grad=(context_vector.requires_grad or lstm_output.requires_grad))
+        
+        # Apply output dense layer
+        batch_size, seq_len, concat_dim = concatenated.shape
+        concatenated_flat = concatenated.view(batch_size * seq_len, concat_dim)
+        output_flat = self.decoder.output_dense(concatenated_flat)
+        output = output_flat.view(batch_size, seq_len, self.tgt_vocab_size)
+        
+        return output, new_state
     
     def generate(self, encoder_inputs, max_length=50, start_token_id=1, end_token_id=2):
         """
-        Generate target sequence using greedy decoding
+        Generate target sequence using greedy decoding with improved EOS handling
         
         Args:
             encoder_inputs: Source sequence tokens (batch_size, src_seq_len)
@@ -247,24 +266,31 @@ class EncoderDecoderModel(Module):
         # Initialize decoder input with start token
         decoder_input = torch.full((batch_size, 1), start_token_id, 
                                   dtype=torch.long, device=self.device)
-        decoder_input = Tensor(decoder_input)
+        decoder_input = Tensor(decoder_input.float())
         
         generated_tokens = []
         state = (state_h, state_c)
+        finished = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
         
-        for _ in range(max_length):
+        for step in range(max_length):
             # Single decoding step
             output, state = self.decode_step(decoder_input, encoder_outputs, state)
             
             # Get predicted token (greedy)
             predicted_token = output.data.argmax(dim=-1)  # (batch_size, 1)
+            
+            # Mask tokens for finished sequences (prevent generation after EOS)
+            predicted_token = predicted_token.masked_fill(finished.unsqueeze(1), end_token_id)
             generated_tokens.append(predicted_token)
             
-            # Check if all sequences have generated end token
-            if (predicted_token == end_token_id).all():
+            # Update finished sequences
+            finished = finished | (predicted_token.squeeze(1) == end_token_id)
+            
+            # Break if all sequences are finished
+            if finished.all():
                 break
             
-            # Use predicted token as next input
+            # Use predicted token as next input (convert to float for embedding)
             decoder_input = Tensor(predicted_token.float())
         
         # Concatenate generated tokens
@@ -274,6 +300,135 @@ class EncoderDecoderModel(Module):
             generated_sequence = torch.empty((batch_size, 0), dtype=torch.long, device=self.device)
         
         return generated_sequence
+    
+    def beam_search(self, encoder_inputs, beam_width=3, max_length=50, start_token_id=1, end_token_id=2, length_penalty=0.6):
+        """
+        Generate target sequence using beam search decoding
+        
+        Args:
+            encoder_inputs: Source sequence tokens (batch_size, src_seq_len)
+            beam_width: Number of beams to maintain
+            max_length: Maximum generation length
+            start_token_id: Start of sequence token ID
+            end_token_id: End of sequence token ID
+            length_penalty: Length normalization penalty (0.0-1.0, higher = prefer longer sequences)
+            
+        Returns:
+            best_sequences: Best generated sequences (batch_size, seq_len)
+        """
+        batch_size = encoder_inputs.shape[0]
+        
+        # For simplicity, only handle batch_size=1 in beam search
+        if batch_size != 1:
+            # Fall back to greedy for batch processing
+            return self.generate(encoder_inputs, max_length, start_token_id, end_token_id)
+        
+        # Encode input
+        encoder_outputs, state_h, state_c = self.encode(encoder_inputs)
+        
+        # Initialize beams: (score, sequence, state)
+        beams = [(0.0, [start_token_id], (state_h, state_c))]
+        completed_sequences = []
+        
+        for step in range(max_length):
+            new_beams = []
+            
+            for score, sequence, state in beams:
+                if sequence[-1] == end_token_id:
+                    # Apply length penalty and add to completed
+                    length_penalty_factor = ((5 + len(sequence)) / 6) ** length_penalty
+                    normalized_score = score / length_penalty_factor
+                    completed_sequences.append((normalized_score, sequence))
+                    continue
+                
+                # Prepare input for this beam
+                decoder_input = torch.tensor([[sequence[-1]]], dtype=torch.float32, device=self.device)
+                decoder_input = Tensor(decoder_input)
+                
+                # Get predictions for this step
+                output, new_state = self.decode_step(decoder_input, encoder_outputs, state)
+                log_probs = torch.log_softmax(output.data, dim=-1).squeeze()
+                
+                # Get top-k candidates
+                top_scores, top_indices = torch.topk(log_probs, beam_width)
+                
+                for i in range(beam_width):
+                    token_score = top_scores[i].item()
+                    token_id = top_indices[i].item()
+                    new_score = score + token_score
+                    new_sequence = sequence + [token_id]
+                    new_beams.append((new_score, new_sequence, new_state))
+            
+            # Keep only top beam_width beams
+            beams = sorted(new_beams, key=lambda x: x[0], reverse=True)[:beam_width]
+            
+            # Early stopping if we have enough completed sequences
+            if len(completed_sequences) >= beam_width:
+                break
+        
+        # Add remaining beams to completed sequences
+        for score, sequence, _ in beams:
+            length_penalty_factor = ((5 + len(sequence)) / 6) ** length_penalty
+            normalized_score = score / length_penalty_factor
+            completed_sequences.append((normalized_score, sequence))
+        
+        # Return best sequence
+        if completed_sequences:
+            best_sequence = max(completed_sequences, key=lambda x: x[0])[1][1:]  # Remove start token
+            return torch.tensor([best_sequence], dtype=torch.long, device=self.device)
+        else:
+            # Fallback to greedy if no completed sequences
+            return self.generate(encoder_inputs, max_length, start_token_id, end_token_id)
+    
+    def forward_with_scheduled_sampling(self, encoder_inputs, decoder_inputs, targets, teacher_forcing_ratio=1.0):
+        """
+        Forward pass with scheduled sampling during training
+        
+        Args:
+            encoder_inputs: Source sequence tokens (batch_size, src_seq_len)
+            decoder_inputs: Target input sequence tokens (batch_size, tgt_seq_len)
+            targets: Target output sequence tokens (batch_size, tgt_seq_len)
+            teacher_forcing_ratio: Probability of using teacher forcing (0.0-1.0)
+            
+        Returns:
+            decoder_outputs: Output logits (batch_size, tgt_seq_len, tgt_vocab_size)
+        """
+        if teacher_forcing_ratio == 1.0:
+            # Full teacher forcing (current implementation)
+            return self.forward(encoder_inputs, decoder_inputs)
+        
+        batch_size, target_len = decoder_inputs.shape
+        
+        # Encode input
+        encoder_outputs, state_h, state_c = self.encode(encoder_inputs)
+        state = (state_h, state_c)
+        
+        # Initialize outputs list
+        outputs = []
+        
+        # First input is always from ground truth (SOS token)
+        decoder_input = decoder_inputs[:, :1]  # (batch_size, 1)
+        
+        for t in range(target_len):
+            # Single decoding step
+            output, state = self.decode_step(decoder_input, encoder_outputs, state)
+            outputs.append(output)
+            
+            # Decide next input based on teacher forcing ratio
+            if t < target_len - 1:  # Don't need next input for last step
+                use_teacher_forcing = torch.rand(1).item() < teacher_forcing_ratio
+                
+                if use_teacher_forcing:
+                    # Use ground truth token
+                    decoder_input = decoder_inputs[:, t+1:t+2]
+                else:
+                    # Use model's own prediction
+                    predicted_token = output.data.argmax(dim=-1)
+                    decoder_input = Tensor(predicted_token.float())
+        
+        # Concatenate all outputs
+        final_output = torch.cat([out.data for out in outputs], dim=1)
+        return Tensor(final_output, requires_grad=True)
 
 
 # Factory function to create model matching the reference notebook

@@ -29,7 +29,8 @@ class Trainer:
             'train_loss': [],
             'val_loss': [],
             'train_acc': [],
-            'val_acc': []
+            'val_acc': [],
+            'teacher_forcing_ratio': []
         }
     
     def compute_accuracy(self, predictions, targets):
@@ -59,14 +60,32 @@ class Trainer:
         
         return accuracy.item()
     
-    def train_step(self, encoder_inputs, decoder_inputs, targets):
+    def get_teacher_forcing_ratio(self, epoch, total_epochs, initial_ratio=1.0, final_ratio=0.3):
         """
-        Single training step
+        Gradually decrease teacher forcing ratio during training (curriculum learning)
+        
+        Args:
+            epoch: Current epoch (0-based)
+            total_epochs: Total number of epochs
+            initial_ratio: Starting teacher forcing ratio
+            final_ratio: Final teacher forcing ratio
+            
+        Returns:
+            teacher_forcing_ratio: Current ratio for this epoch
+        """
+        progress = epoch / max(total_epochs - 1, 1)  # Avoid division by zero
+        ratio = initial_ratio - (initial_ratio - final_ratio) * progress
+        return max(ratio, final_ratio)  # Ensure we don't go below final_ratio
+    
+    def train_step(self, encoder_inputs, decoder_inputs, targets, teacher_forcing_ratio=1.0):
+        """
+        Single training step with configurable teacher forcing
         
         Args:
             encoder_inputs: Encoder input sequences
             decoder_inputs: Decoder input sequences  
             targets: Target sequences
+            teacher_forcing_ratio: Probability of using teacher forcing (0.0-1.0)
             
         Returns:
             loss: Training loss
@@ -80,8 +99,15 @@ class Trainer:
         # Zero gradients
         self.optimizer.zero_grad()
         
-        # Forward pass
-        predictions = self.model(encoder_inputs, decoder_inputs)
+        # Forward pass with scheduled sampling
+        if teacher_forcing_ratio == 1.0:
+            # Use standard forward pass for full teacher forcing
+            predictions = self.model(encoder_inputs, decoder_inputs)
+        else:
+            # Use scheduled sampling
+            predictions = self.model.forward_with_scheduled_sampling(
+                encoder_inputs, decoder_inputs, targets, teacher_forcing_ratio
+            )
         
         # Compute loss
         loss = self.loss_function(predictions, targets)
@@ -131,12 +157,13 @@ class Trainer:
         
         return loss.data.item(), accuracy
     
-    def train_epoch(self, train_loader):
+    def train_epoch(self, train_loader, teacher_forcing_ratio=1.0):
         """
         Train for one epoch
         
         Args:
             train_loader: Training data loader
+            teacher_forcing_ratio: Probability of using teacher forcing
             
         Returns:
             avg_loss: Average training loss
@@ -149,7 +176,7 @@ class Trainer:
         num_batches = 0
         
         for encoder_inputs, decoder_inputs, targets in train_loader:
-            loss, accuracy = self.train_step(encoder_inputs, decoder_inputs, targets)
+            loss, accuracy = self.train_step(encoder_inputs, decoder_inputs, targets, teacher_forcing_ratio)
             
             total_loss += loss
             total_accuracy += accuracy
@@ -227,10 +254,13 @@ class Trainer:
         for epoch in range(epochs):
             start_time = time.time()
             
-            # Train epoch
-            train_loss, train_acc = self.train_epoch(train_loader)
+            # Calculate teacher forcing ratio for this epoch
+            tf_ratio = self.get_teacher_forcing_ratio(epoch, epochs)
             
-            # Validate epoch
+            # Train epoch with current teacher forcing ratio
+            train_loss, train_acc = self.train_epoch(train_loader, teacher_forcing_ratio=tf_ratio)
+            
+            # Validate epoch (always use full teacher forcing for validation)
             val_loss, val_acc = self.validate_epoch(val_loader)
             
             # Record history
@@ -238,13 +268,15 @@ class Trainer:
             self.history['train_acc'].append(train_acc)
             self.history['val_loss'].append(val_loss)
             self.history['val_acc'].append(val_acc)
+            self.history['teacher_forcing_ratio'].append(tf_ratio)
             
             epoch_time = time.time() - start_time
             
             if verbose:
                 print(f"Epoch {epoch+1}/{epochs} - {epoch_time:.2f}s - "
                       f"loss: {train_loss:.4f} - acc: {train_acc:.4f} - "
-                      f"val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}")
+                      f"val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f} - "
+                      f"tf_ratio: {tf_ratio:.3f}")
         
         return self.history
 
@@ -383,7 +415,7 @@ def train_model(data_file_path, epochs=10, batch_size=64, embedding_dim=256,
 
 
 def translate_sentence(trainer, sentence, eng_tokenizer, fre_tokenizer, 
-                      max_eng_length, device='cpu'):
+                      max_eng_length, device='cpu', use_beam_search=False, beam_width=3, debug=False):
     """
     Translate a single sentence using trained model
     
@@ -394,15 +426,26 @@ def translate_sentence(trainer, sentence, eng_tokenizer, fre_tokenizer,
         fre_tokenizer: French tokenizer
         max_eng_length: Maximum English sequence length
         device: Device to run on
+        use_beam_search: Whether to use beam search (slower but better quality)
+        beam_width: Beam width for beam search
+        debug: Print debug information
         
     Returns:
         translation: Translated French sentence
     """
     from data_utils import pad_sequences
     
+    if debug:
+        print(f"Input sentence: '{sentence}'")
+    
     # Tokenize and pad input sentence
     sequence = eng_tokenizer.texts_to_sequences([sentence])
+    if debug:
+        print(f"Tokenized sequence: {sequence}")
+    
     padded = pad_sequences(sequence, maxlen=max_eng_length, padding='post')
+    if debug:
+        print(f"Padded sequence: {padded}")
     
     # Convert to tensor
     encoder_inputs = Tensor(padded.float()).to(device)
@@ -414,18 +457,75 @@ def translate_sentence(trainer, sentence, eng_tokenizer, fre_tokenizer,
         start_token_id = fre_tokenizer.word_index.get('sos', 1)
         end_token_id = fre_tokenizer.word_index.get('eos', 2)
         
-        generated_tokens = trainer.model.generate(
-            encoder_inputs, 
-            max_length=50,
-            start_token_id=start_token_id,
-            end_token_id=end_token_id
-        )
+        if debug:
+            print(f"Start token ID: {start_token_id}, End token ID: {end_token_id}")
+        
+        if use_beam_search:
+            generated_tokens = trainer.model.beam_search(
+                encoder_inputs, 
+                beam_width=beam_width,
+                max_length=50,
+                start_token_id=start_token_id,
+                end_token_id=end_token_id
+            )
+        else:
+            generated_tokens = trainer.model.generate(
+                encoder_inputs, 
+                max_length=50,
+                start_token_id=start_token_id,
+                end_token_id=end_token_id
+            )
+        
+        if debug:
+            print(f"Generated token IDs: {generated_tokens}")
     
     # Convert back to text
     generated_sequence = generated_tokens.cpu().numpy().tolist()
+    if debug:
+        print(f"Generated sequence: {generated_sequence}")
+    
     translation = fre_tokenizer.sequences_to_texts(generated_sequence)[0]
     
     # Remove SOS and EOS tokens
-    translation = translation.replace('sos ', '').replace(' eos', '')
+    translation = translation.replace('sos ', '').replace(' eos', '').strip()
+    
+    if debug:
+        print(f"Final translation: '{translation}'")
     
     return translation
+
+
+def evaluate_translations(trainer, test_sentences, eng_tokenizer, fre_tokenizer, 
+                         max_eng_length, device='cpu', use_beam_search=False):
+    """
+    Evaluate model on multiple test sentences
+    
+    Args:
+        trainer: Trained model trainer
+        test_sentences: List of English sentences to translate
+        eng_tokenizer: English tokenizer
+        fre_tokenizer: French tokenizer
+        max_eng_length: Maximum English sequence length
+        device: Device to run on
+        use_beam_search: Whether to use beam search
+        
+    Returns:
+        translations: List of translated sentences
+    """
+    translations = []
+    
+    print(f"Evaluating {len(test_sentences)} sentences...")
+    print(f"Using {'beam search' if use_beam_search else 'greedy decoding'}")
+    print("-" * 60)
+    
+    for i, sentence in enumerate(test_sentences):
+        translation = translate_sentence(
+            trainer, sentence, eng_tokenizer, fre_tokenizer, 
+            max_eng_length, device, use_beam_search=use_beam_search
+        )
+        translations.append(translation)
+        print(f"{i+1:2d}. EN: {sentence}")
+        print(f"    FR: {translation}")
+        print()
+    
+    return translations
