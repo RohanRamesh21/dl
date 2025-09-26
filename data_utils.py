@@ -219,11 +219,32 @@ def load_translation_data(file_path, sample_size=None, random_state=42):
     # Load dataset
     dataset = pd.read_csv(file_path)
     
-    # Check for required columns
-    if 'English words/sentences' not in dataset.columns:
-        raise ValueError("Dataset must contain 'English words/sentences' column")
-    if 'French words/sentences' not in dataset.columns:
-        raise ValueError("Dataset must contain 'French words/sentences' column")
+    # Check for required columns - handle different naming conventions
+    english_col = None
+    french_col = None
+    
+    # Check for various English column names
+    english_candidates = ['English words/sentences', 'english', 'English', 'en', 'EN']
+    for col in english_candidates:
+        if col in dataset.columns:
+            english_col = col
+            break
+    
+    # Check for various French column names  
+    french_candidates = ['French words/sentences', 'french', 'French', 'fr', 'FR']
+    for col in french_candidates:
+        if col in dataset.columns:
+            french_col = col
+            break
+    
+    if english_col is None:
+        available_cols = list(dataset.columns)
+        raise ValueError(f"Dataset must contain an English column. Available columns: {available_cols}")
+    if french_col is None:
+        available_cols = list(dataset.columns)
+        raise ValueError(f"Dataset must contain a French column. Available columns: {available_cols}")
+    
+    print(f"Using columns: English='{english_col}', French='{french_col}'")
     
     # Remove duplicates
     dataset = dataset.drop_duplicates()
@@ -238,9 +259,9 @@ def load_translation_data(file_path, sample_size=None, random_state=42):
     if sample_size and sample_size < len(dataset):
         dataset = dataset.head(sample_size)
     
-    # Extract sentences
-    english = np.array(dataset['English words/sentences'])
-    french = np.array(dataset['French words/sentences'])
+    # Extract sentences using the found column names
+    english = np.array(dataset[english_col])
+    french = np.array(dataset[french_col])
     
     # Add SOS and EOS tokens to French sentences (target language)
     french = np.array(['sos ' + sent + ' eos' for sent in french])

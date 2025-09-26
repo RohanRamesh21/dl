@@ -4,7 +4,15 @@ Demonstrates the complete training pipeline with all enhancements
 """
 from train import train_model, translate_sentence, evaluate_translations, create_trainer, prepare_training_data
 from data_utils import load_translation_data, prepare_data
-import matplotlib.pyplot as plt
+
+# Optional matplotlib import
+try:
+    import matplotlib.pyplot as plt
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
+    print("⚠️  Matplotlib not available. Plots will be skipped.")
+
 import time
 
 
@@ -84,14 +92,22 @@ def train_with_improvements(data_file_path='sample_english_french.csv',
     
     print("\\n✅ Training completed!")
     
-    # Plot training curves
-    plot_training_history(history)
+    # Plot training curves (if matplotlib is available)
+    if MATPLOTLIB_AVAILABLE:
+        plot_training_history(history)
+    else:
+        print("📊 Matplotlib not available - skipping training plots")
+        print("📋 Training completed successfully!")
     
     return trainer, data_dict
 
 
 def plot_training_history(history):
     """Plot training history with teacher forcing ratio"""
+    if not MATPLOTLIB_AVAILABLE:
+        print("📊 Cannot plot - matplotlib not available")
+        return
+        
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
     
     epochs = range(1, len(history['train_loss']) + 1)
