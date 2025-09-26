@@ -13,7 +13,19 @@ import os
 from collections import Counter
 import re
 from sklearn.model_selection import train_test_split
-from tqdm import tqdm
+
+# Smart tqdm import for both terminal and notebook environments
+try:
+    # Check if we're in a Jupyter environment
+    if 'ipykernel' in sys.modules or 'IPython' in sys.modules:
+        from tqdm.notebook import tqdm
+        NOTEBOOK_ENV = True
+    else:
+        from tqdm import tqdm
+        NOTEBOOK_ENV = False
+except ImportError:
+    from tqdm import tqdm
+    NOTEBOOK_ENV = False
 
 
 class Linear:
@@ -664,10 +676,8 @@ def train_model(data_file_path=None, epochs=10, batch_size=64, embedding_dim=256
     best_val_loss = float('inf')
     patience_counter = 0
     
-    # Training loop with outer progress bar
-    epoch_pbar = tqdm(range(epochs), desc='Training Progress')
-    
-    for epoch in epoch_pbar:
+    # Training loop
+    for epoch in range(epochs):
         start_time = time.time()
         
         # Training phase
@@ -676,11 +686,15 @@ def train_model(data_file_path=None, epochs=10, batch_size=64, embedding_dim=256
         total_acc = 0.0
         num_batches = 0
         
-        # Batch training with progress bar
+        # Single progress bar per epoch that updates with each batch
         batch_indices = list(range(0, len(eng_train), batch_size))
-        pbar = tqdm(batch_indices, desc=f'Epoch {epoch+1}/{epochs}', leave=False)
+        if NOTEBOOK_ENV:
+            pbar = tqdm(total=len(batch_indices), desc=f'Epoch {epoch+1}/{epochs}', 
+                       leave=True, position=0)
+        else:
+            pbar = tqdm(total=len(batch_indices), desc=f'Epoch {epoch+1}/{epochs}')
         
-        for i in pbar:
+        for batch_idx, i in enumerate(batch_indices):
             end_i = min(i + batch_size, len(eng_train))
             
             enc_batch = eng_train[i:end_i]
@@ -693,25 +707,39 @@ def train_model(data_file_path=None, epochs=10, batch_size=64, embedding_dim=256
             total_acc += acc
             num_batches += 1
             
-            # Update progress bar
+            # Update the single progress bar with current metrics
+            avg_loss = total_loss / num_batches
+            avg_acc = total_acc / num_batches
+            
             pbar.set_postfix({
                 'loss': f'{loss:.4f}',
                 'acc': f'{acc:.4f}',
-                'avg_loss': f'{total_loss/num_batches:.4f}'
+                'avg_loss': f'{avg_loss:.4f}',
+                'avg_acc': f'{avg_acc:.4f}'
             })
+            pbar.update(1)  # Move progress bar forward by 1 step
+        
+        pbar.close()  # Close the progress bar when epoch is done
         
         avg_train_loss = total_loss / num_batches
         avg_train_acc = total_acc / num_batches
         
-        # Validation phase
+        # Validation phase with single progress bar
         model.train = False
         val_loss = 0.0
         val_acc = 0.0
         val_batches = 0
         
+        val_batch_indices = list(range(0, len(eng_val), batch_size))
+        
         with torch.no_grad():
-            val_pbar = tqdm(range(0, len(eng_val), batch_size), desc='Validation', leave=False)
-            for i in val_pbar:
+            if NOTEBOOK_ENV:
+                val_pbar = tqdm(total=len(val_batch_indices), desc='Validation', 
+                               leave=True, position=0)
+            else:
+                val_pbar = tqdm(total=len(val_batch_indices), desc='Validation')
+            
+            for batch_idx, i in enumerate(val_batch_indices):
                 end_i = min(i + batch_size, len(eng_val))
                 
                 enc_batch = eng_val[i:end_i]
@@ -731,6 +759,17 @@ def train_model(data_file_path=None, epochs=10, batch_size=64, embedding_dim=256
                 val_loss += loss.item()
                 val_acc += accuracy.item()
                 val_batches += 1
+                
+                # Update validation progress bar
+                avg_val_loss = val_loss / val_batches
+                avg_val_acc = val_acc / val_batches
+                val_pbar.set_postfix({
+                    'val_loss': f'{avg_val_loss:.4f}',
+                    'val_acc': f'{avg_val_acc:.4f}'
+                })
+                val_pbar.update(1)
+            
+            val_pbar.close()
         
         avg_val_loss = val_loss / val_batches if val_batches > 0 else 0.0
         avg_val_acc = val_acc / val_batches if val_batches > 0 else 0.0
@@ -748,14 +787,7 @@ def train_model(data_file_path=None, epochs=10, batch_size=64, embedding_dim=256
         
         epoch_time = time.time() - start_time
         
-        # Update epoch progress bar
-        epoch_pbar.set_postfix({
-            'train_loss': f'{avg_train_loss:.4f}',
-            'val_loss': f'{avg_val_loss:.4f}',
-            'val_acc': f'{avg_val_acc:.4f}',
-            'lr': f'{current_lr:.2e}'
-        })
-        
+        # Print epoch summary
         print(f"Epoch {epoch+1:2d}/{epochs} - {epoch_time:.2f}s - "
               f"loss: {avg_train_loss:.4f} - acc: {avg_train_acc:.4f} - "
               f"val_loss: {avg_val_loss:.4f} - val_acc: {avg_val_acc:.4f} - lr: {current_lr:.2e}")

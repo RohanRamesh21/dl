@@ -6,7 +6,20 @@ Uses the complete English-French dataset with optimized hyperparameters and impr
 
 import torch
 import time
-from tqdm import tqdm
+import sys
+
+# Smart tqdm import for both terminal and notebook environments
+try:
+    if 'ipykernel' in sys.modules or 'IPython' in sys.modules:
+        from tqdm.notebook import tqdm
+        NOTEBOOK_ENV = True
+    else:
+        from tqdm import tqdm 
+        NOTEBOOK_ENV = False
+except ImportError:
+    from tqdm import tqdm
+    NOTEBOOK_ENV = False
+
 from correct_implementation import train_model, translate_sentence
 
 def train_on_full_dataset():
