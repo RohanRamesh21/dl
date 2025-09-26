@@ -2,6 +2,7 @@
 Improved training script with scheduled sampling and beam search
 Demonstrates the complete training pipeline with all enhancements
 """
+import torch 
 from train import train_model, translate_sentence, evaluate_translations, create_trainer, prepare_training_data
 from data_utils import load_translation_data, prepare_data
 
@@ -22,7 +23,7 @@ def train_with_improvements(data_file_path='sample_english_french.csv',
                           embedding_dim=256,
                           lstm_units=256, 
                           learning_rate=0.001,
-                          device='cpu',
+                          device='cuda',
                           sample_size=1000):
     """
     Train model with all improvements: scheduled sampling, teacher forcing curriculum, etc.
@@ -234,7 +235,7 @@ if __name__ == "__main__":
         'embedding_dim': 256,
         'lstm_units': 256,
         'learning_rate': 0.001,
-        'device': 'cpu',
+        'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'sample_size': 1000  # Use subset for faster training
     }
     

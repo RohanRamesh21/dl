@@ -54,13 +54,22 @@ class Tensor:
                 raise RuntimeError("grad can be implicitly created only for scalar outputs")
             gradient = torch.ones_like(self.data)
         
-        if self.grad is None:
-            self.grad = torch.zeros_like(self.data)
-            
-        self.grad += gradient
+        # Prevent infinite recursion by checking if we're already processing this tensor
+        if hasattr(self, '_processing_backward') and self._processing_backward:
+            return
         
-        if self._backward_fn is not None:
-            self._backward_fn(gradient)
+        self._processing_backward = True
+        
+        try:
+            if self.grad is None:
+                self.grad = torch.zeros_like(self.data)
+                
+            self.grad += gradient
+            
+            if self._backward_fn is not None:
+                self._backward_fn(gradient)
+        finally:
+            self._processing_backward = False
     
     def detach(self):
         """Return a new tensor detached from computation graph"""
