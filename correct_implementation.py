@@ -130,55 +130,92 @@ class LSTMCell:
 
 
 class LSTM:
-    """LSTM layer implemented from scratch using PyTorch tensors"""
+    """LSTM layer implemented from scratch using PyTorch tensors with multi-layer support"""
     
-    def __init__(self, input_size, hidden_size, batch_first=True, 
-                 return_sequences=True, return_state=False, device='cpu'):
+    def __init__(self, input_size, hidden_size, num_layers=1, dropout_rate=0.0, 
+                 batch_first=True, return_sequences=True, return_state=False, device='cpu'):
         self.input_size = input_size
         self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.dropout_rate = dropout_rate
         self.batch_first = batch_first
         self.return_sequences = return_sequences
         self.return_state = return_state
         self.device = device
         
-        self.cell = LSTMCell(input_size, hidden_size, device)
+        # Create multiple LSTM cells for stacked layers
+        self.cells = []
+        for layer in range(num_layers):
+            layer_input_size = input_size if layer == 0 else hidden_size
+            cell = LSTMCell(layer_input_size, hidden_size, device)
+            self.cells.append(cell)
     
     def __call__(self, x, initial_state=None):
-        """Forward pass through LSTM"""
+        """Forward pass through multi-layer LSTM"""
         if not self.batch_first:
             x = x.transpose(0, 1)  # Convert to batch_first
         
         batch_size, seq_len = x.size(0), x.size(1)
         
-        # Initialize states
+        # Initialize states for all layers
         if initial_state is None:
-            h_0 = torch.zeros(batch_size, self.hidden_size, device=self.device)
-            c_0 = torch.zeros(batch_size, self.hidden_size, device=self.device)
-            initial_state = (h_0, c_0)
+            h_states = [torch.zeros(batch_size, self.hidden_size, device=self.device) 
+                       for _ in range(self.num_layers)]
+            c_states = [torch.zeros(batch_size, self.hidden_size, device=self.device) 
+                       for _ in range(self.num_layers)]
+        else:
+            if self.num_layers == 1:
+                # Handle single layer case - initial_state is (h, c)
+                h_states = [initial_state[0]]
+                c_states = [initial_state[1]]
+            else:
+                # Handle multi-layer case - initial_state is (h_layers, c_layers)
+                h_states = list(initial_state[0])  # Should be list of h states
+                c_states = list(initial_state[1])  # Should be list of c states
         
-        outputs = []
-        h_t, c_t = initial_state
+        layer_outputs = []
+        current_input = x
         
-        # Process sequence step by step
+        # Process each time step
         for t in range(seq_len):
-            h_t, c_t = self.cell(x[:, t, :], (h_t, c_t))
+            # Process through all layers for this time step
+            layer_input = current_input[:, t, :]  # (batch_size, input_size)
+            
+            for layer in range(self.num_layers):
+                h_t, c_t = self.cells[layer](layer_input, (h_states[layer], c_states[layer]))
+                h_states[layer] = h_t
+                c_states[layer] = c_t
+                
+                # Apply dropout between layers (except last layer)
+                if layer < self.num_layers - 1 and self.dropout_rate > 0.0:
+                    layer_input = F.dropout(h_t, p=self.dropout_rate, training=True)
+                else:
+                    layer_input = h_t
+            
             if self.return_sequences:
-                outputs.append(h_t.unsqueeze(1))
+                layer_outputs.append(h_t.unsqueeze(1))
         
         if self.return_sequences:
-            output = torch.cat(outputs, dim=1)  # (batch_size, seq_len, hidden_size)
+            output = torch.cat(layer_outputs, dim=1)  # (batch_size, seq_len, hidden_size)
             if not self.batch_first:
                 output = output.transpose(0, 1)
         else:
-            output = h_t  # Only last timestep
+            output = h_t  # Only last timestep from last layer
         
         if self.return_state:
-            return output, (h_t, c_t)
+            if self.num_layers == 1:
+                return output, (h_states[0], c_states[0])
+            else:
+                return output, (torch.stack(h_states), torch.stack(c_states))
         else:
             return output
     
     def parameters(self):
-        return self.cell.parameters()
+        """Return parameters from all layers"""
+        params = []
+        for cell in self.cells:
+            params.extend(cell.parameters())
+        return params
 
 
 class AdditiveAttention:
@@ -224,17 +261,20 @@ class AdditiveAttention:
 
 
 class Encoder:
-    """LSTM Encoder implemented from scratch"""
+    """LSTM Encoder implemented from scratch with multi-layer support"""
     
-    def __init__(self, vocab_size, embedding_dim, lstm_units, device='cpu'):
+    def __init__(self, vocab_size, embedding_dim, lstm_units, num_layers=1, dropout_rate=0.0, device='cpu'):
         self.vocab_size = vocab_size
         self.embedding_dim = embedding_dim
         self.lstm_units = lstm_units
+        self.num_layers = num_layers
+        self.dropout_rate = dropout_rate
         self.device = device
         
         # Components implemented from scratch
         self.embedding = Embedding(vocab_size, embedding_dim, device)
-        self.lstm = LSTM(embedding_dim, lstm_units, batch_first=True, 
+        self.lstm = LSTM(embedding_dim, lstm_units, num_layers=num_layers, 
+                        dropout_rate=dropout_rate, batch_first=True, 
                         return_sequences=True, return_state=True, device=device)
     
     def __call__(self, x):
@@ -255,17 +295,20 @@ class Encoder:
 
 
 class Decoder:
-    """LSTM Decoder with Attention implemented from scratch"""
+    """LSTM Decoder with Attention implemented from scratch with multi-layer support"""
     
-    def __init__(self, vocab_size, embedding_dim, lstm_units, device='cpu'):
+    def __init__(self, vocab_size, embedding_dim, lstm_units, num_layers=1, dropout_rate=0.0, device='cpu'):
         self.vocab_size = vocab_size
         self.embedding_dim = embedding_dim
         self.lstm_units = lstm_units
+        self.num_layers = num_layers
+        self.dropout_rate = dropout_rate
         self.device = device
         
         # Components implemented from scratch
         self.embedding = Embedding(vocab_size, embedding_dim, device)
-        self.lstm = LSTM(embedding_dim, lstm_units, batch_first=True,
+        self.lstm = LSTM(embedding_dim, lstm_units, num_layers=num_layers,
+                        dropout_rate=dropout_rate, batch_first=True,
                         return_sequences=True, return_state=True, device=device)
         self.attention = AdditiveAttention(use_scale=True)
         self.output_dense = Linear(lstm_units * 2, vocab_size, device=device)  # *2 for concatenation
@@ -362,18 +405,24 @@ class Decoder:
 
 
 class EncoderDecoderModel:
-    """Complete Encoder-Decoder Model with Attention implemented from scratch"""
+    """Complete Encoder-Decoder Model with Attention implemented from scratch with multi-layer support"""
     
-    def __init__(self, src_vocab_size, tgt_vocab_size, embedding_dim=256, lstm_units=256, device='cpu'):
+    def __init__(self, src_vocab_size, tgt_vocab_size, embedding_dim=256, lstm_units=256, 
+                 encoder_num_layers=1, decoder_num_layers=1, dropout_rate=0.0, device='cpu'):
         self.src_vocab_size = src_vocab_size
         self.tgt_vocab_size = tgt_vocab_size
         self.embedding_dim = embedding_dim
         self.lstm_units = lstm_units
+        self.encoder_num_layers = encoder_num_layers
+        self.decoder_num_layers = decoder_num_layers
+        self.dropout_rate = dropout_rate
         self.device = device
         
-        # Encoder and Decoder implemented from scratch
-        self.encoder = Encoder(src_vocab_size, embedding_dim, lstm_units, device)
-        self.decoder = Decoder(tgt_vocab_size, embedding_dim, lstm_units, device)
+        # Encoder and Decoder implemented from scratch with multi-layer support
+        self.encoder = Encoder(src_vocab_size, embedding_dim, lstm_units, 
+                              num_layers=encoder_num_layers, dropout_rate=dropout_rate, device=device)
+        self.decoder = Decoder(tgt_vocab_size, embedding_dim, lstm_units, 
+                              num_layers=decoder_num_layers, dropout_rate=dropout_rate, device=device)
     
     def __call__(self, encoder_inputs, decoder_inputs):
         """Forward pass through the complete model"""
@@ -710,7 +759,8 @@ def prepare_data(data_file_path=None, sample_size=None, use_dummy_data=False):
 
 def train_model_enhanced(data_file_path=None, epochs=10, batch_size=64, embedding_dim=256,
                         lstm_units=256, learning_rate=0.001, device='cpu', sample_size=None, 
-                        use_dummy_data=False, teacher_forcing_schedule='linear'):
+                        use_dummy_data=False, teacher_forcing_schedule='linear',
+                        encoder_num_layers=1, decoder_num_layers=1, dropout_rate=0.0):
     """Enhanced training pipeline with teacher forcing scheduling"""
     print("=" * 60)
     print("ENHANCED NEURAL MACHINE TRANSLATION TRAINING")
@@ -729,6 +779,9 @@ def train_model_enhanced(data_file_path=None, epochs=10, batch_size=64, embeddin
         tgt_vocab_size=data_dict['fre_vocab_size'],
         embedding_dim=embedding_dim,
         lstm_units=lstm_units,
+        encoder_num_layers=encoder_num_layers,
+        decoder_num_layers=decoder_num_layers,
+        dropout_rate=dropout_rate,
         device=device
     )
     model.to(device)
@@ -1052,6 +1105,9 @@ def train_model(data_file_path=None, epochs=10, batch_size=64, embedding_dim=256
         tgt_vocab_size=data_dict['fre_vocab_size'],
         embedding_dim=embedding_dim,
         lstm_units=lstm_units,
+        encoder_num_layers=1,
+        decoder_num_layers=1,
+        dropout_rate=0.0,
         device=device
     )
     model.to(device)
