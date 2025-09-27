@@ -524,9 +524,25 @@ class Decoder:
         sos_token_id = sos_id if sos_id is not None else 1  # Fallback to 1 if not provided
         eos_token_id = eos_id if eos_id is not None else 2  # Fallback to 2 if not provided
         
+        # Project initial states if needed (for bidirectional encoder compatibility)
+        if self.h_projection is not None:
+            if isinstance(initial_state[0], torch.Tensor) and initial_state[0].dim() == 2:
+                # Single layer case
+                h_init = self.h_projection(initial_state[0])
+                c_init = self.c_projection(initial_state[1])
+                projected_state = (h_init, c_init)
+            else:
+                # Multi-layer case
+                h_layers = [self.h_projection(h) for h in initial_state[0]]
+                c_layers = [self.c_projection(c) for c in initial_state[1]]
+                projected_state = (torch.stack(h_layers) if len(h_layers) > 1 else h_layers[0],
+                                 torch.stack(c_layers) if len(c_layers) > 1 else c_layers[0])
+        else:
+            projected_state = initial_state
+        
         # Initialize with SOS token
         decoder_input = torch.full((batch_size, 1), sos_token_id, dtype=torch.long, device=device)
-        decoder_state = initial_state
+        decoder_state = projected_state
         outputs = []
         
         max_len = target_sequence.size(1) if target_sequence is not None else max_length
@@ -1305,7 +1321,23 @@ def translate_sentence(model, sentence, eng_tokenizer, fre_tokenizer, max_eng_le
     
     # Encode input
     encoder_outputs, state_h, state_c = model.encoder(encoder_inputs)
-    decoder_state = (state_h, state_c)
+    initial_state = (state_h, state_c)
+    
+    # Project initial states if needed (for bidirectional encoder compatibility)
+    if model.decoder.h_projection is not None:
+        if isinstance(initial_state[0], torch.Tensor) and initial_state[0].dim() == 2:
+            # Single layer case
+            h_init = model.decoder.h_projection(initial_state[0])
+            c_init = model.decoder.c_projection(initial_state[1])
+            decoder_state = (h_init, c_init)
+        else:
+            # Multi-layer case
+            h_layers = [model.decoder.h_projection(h) for h in initial_state[0]]
+            c_layers = [model.decoder.c_projection(c) for c in initial_state[1]]
+            decoder_state = (torch.stack(h_layers) if len(h_layers) > 1 else h_layers[0],
+                           torch.stack(c_layers) if len(c_layers) > 1 else c_layers[0])
+    else:
+        decoder_state = initial_state
     
     # Initialize with SOS token
     decoder_input = torch.full((1, 1), sos_token_id, dtype=torch.long, device=device)
@@ -1320,13 +1352,14 @@ def translate_sentence(model, sentence, eng_tokenizer, fre_tokenizer, max_eng_le
             # Apply attention (matching training)
             context_vector, _ = model.decoder.attention(
                 query=lstm_output,      # (1, 1, lstm_units)
-                value=encoder_outputs,  # (1, src_seq_len, lstm_units)
-                key=encoder_outputs     # (1, src_seq_len, lstm_units)
+                value=encoder_outputs,  # (1, src_seq_len, encoder_output_size)
+                key=encoder_outputs     # (1, src_seq_len, encoder_output_size)
             )
             
             # Concatenate and get predictions (matching training)
             concatenated = torch.cat([context_vector, lstm_output], dim=-1)
-            concatenated_flat = concatenated.reshape(1, model.decoder.lstm_units * 2)
+            # Use the correct size: encoder_output_size + lstm_units
+            concatenated_flat = concatenated.reshape(1, model.decoder.encoder_output_size + model.decoder.lstm_units)
             step_output = model.decoder.output_dense(concatenated_flat)  # (1, vocab_size)
             
             # Apply temperature for better diversity
