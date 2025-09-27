@@ -342,22 +342,24 @@ class LSTM:
 
 
 class AdditiveAttention:
-    """Learnable Bahdanau-style additive attention"""
+    """Learnable Bahdanau-style additive attention with support for different query and key dimensions"""
 
-    def __init__(self, hidden_size, attention_size=None, use_scale=True, device='cpu'):
+    def __init__(self, query_size, key_size, attention_size=None, use_scale=True, device='cpu'):
         """
-        hidden_size: Dimensionality of query/key/value
-        attention_size: Size of intermediate attention projection (default = hidden_size)
+        query_size: Dimensionality of query (decoder hidden states)
+        key_size: Dimensionality of key/value (encoder outputs)  
+        attention_size: Size of intermediate attention projection (default = key_size)
         use_scale: Whether to scale scores by sqrt(attention_size)
         """
-        self.hidden_size = hidden_size
-        self.attention_size = attention_size or hidden_size
+        self.query_size = query_size
+        self.key_size = key_size
+        self.attention_size = attention_size or key_size
         self.use_scale = use_scale
         self.device = device
 
         # Learnable weights
-        self.W_q = Linear(hidden_size, self.attention_size, device=device)
-        self.W_k = Linear(hidden_size, self.attention_size, device=device)
+        self.W_q = Linear(query_size, self.attention_size, device=device)
+        self.W_k = Linear(key_size, self.attention_size, device=device)
         self.v = Linear(self.attention_size, 1, device=device)
 
     def parameters(self):
@@ -369,9 +371,9 @@ class AdditiveAttention:
 
     def __call__(self, query, value, key=None):
         """
-        query: (batch, tgt_len, hidden)
-        value: (batch, src_len, hidden)
-        key:   (batch, src_len, hidden) — defaults to value
+        query: (batch, tgt_len, query_size)
+        value: (batch, src_len, key_size)
+        key:   (batch, src_len, key_size) — defaults to value
         Returns: context_vector, attention_weights
         """
         if key is None:
@@ -395,7 +397,7 @@ class AdditiveAttention:
         attention_weights = F.softmax(score, dim=-1)  # (B, T, S)
 
         # Compute context vectors: weighted sum over `value`
-        context_vector = torch.bmm(attention_weights, value)  # (B, T, H)
+        context_vector = torch.bmm(attention_weights, value)  # (B, T, key_size)
 
         return context_vector, attention_weights
 
@@ -456,8 +458,9 @@ class Decoder:
                         dropout_rate=dropout_rate, batch_first=True,
                         return_sequences=True, return_state=True, device=device)
         
-        # Attention handles encoder_output_size (could be bidirectional)
-        self.attention = AdditiveAttention(hidden_size=lstm_units, use_scale=True, device=device)
+        # Attention handles different dimensions: query (decoder) vs key/value (encoder)
+        # Query comes from decoder (lstm_units), Key/Value from encoder (encoder_output_size)
+        self.attention = AdditiveAttention(query_size=lstm_units, key_size=encoder_output_size, use_scale=True, device=device)
         
         # Output dense: concatenates context (encoder_output_size) + decoder output (lstm_units)
         self.output_dense = Linear(encoder_output_size + lstm_units, vocab_size, device=device)
