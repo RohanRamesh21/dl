@@ -991,13 +991,28 @@ def prepare_data(data_file_path=None, sample_size=None, use_dummy_data=False):
     fre_train_pad = pad_sequences(fre_train_seq, maxlen=max_fre_length, padding='post')
     fre_val_pad = pad_sequences(fre_val_seq, maxlen=max_fre_length, padding='post')
     
-    # Extract special token IDs from BPE tokenizer
+    # Extract special token IDs from BPE tokenizer - handle mixed format
     pad_id = bpe_tokenizer.token_to_id("[PAD]")
     unk_id = bpe_tokenizer.token_to_id("[UNK]")
-    sos_id = bpe_tokenizer.token_to_id("[SOS]")
-    eos_id = bpe_tokenizer.token_to_id("[EOS]")
+    
+    # For SOS and EOS, the training data uses 'sos' and 'eos', not symbolic tokens
+    sos_id = bpe_tokenizer.token_to_id("sos")
+    eos_id = bpe_tokenizer.token_to_id("eos")
+    
+    # Fallback to symbolic if not found
+    if sos_id is None:
+        sos_id = bpe_tokenizer.token_to_id("[SOS]")
+    if eos_id is None:
+        eos_id = bpe_tokenizer.token_to_id("[EOS]")
+    
+    # Final fallbacks based on known vocab structure
+    if sos_id is None:
+        sos_id = 36  # From vocab: "sos": 36
+    if eos_id is None:
+        eos_id = 35  # From vocab: "eos": 35
     
     print(f"📊 Special token IDs: PAD={pad_id}, UNK={unk_id}, SOS={sos_id}, EOS={eos_id}")
+    print(f"📊 Using textual tokens: sos={sos_id}, eos={eos_id} (not symbolic [SOS]/[EOS])")
     
     return {
         'eng_train_pad': eng_train_pad,
@@ -1255,9 +1270,22 @@ def translate_sentence(model, sentence, bpe_tokenizer, max_eng_length, device='c
     
     encoder_inputs = torch.tensor([sequence], dtype=torch.long, device=device)
     
-    # Get special tokens from BPE tokenizer
-    sos_token_id = bpe_tokenizer.token_to_id("[SOS]")
-    eos_token_id = bpe_tokenizer.token_to_id("[EOS]")
+    # Get special tokens - handle mixed token format in BPE tokenizer
+    # The training data uses 'sos' and 'eos' tokens, not '[SOS]' and '[EOS]'
+    sos_token_id = bpe_tokenizer.token_to_id("sos")
+    eos_token_id = bpe_tokenizer.token_to_id("eos")
+    
+    # Fallback to symbolic tokens if textual ones don't exist
+    if sos_token_id is None:
+        sos_token_id = bpe_tokenizer.token_to_id("[SOS]")
+    if eos_token_id is None:
+        eos_token_id = bpe_tokenizer.token_to_id("[EOS]")
+        
+    # Final fallback to default IDs based on vocab structure
+    if sos_token_id is None:
+        sos_token_id = 36  # From vocab: "sos": 36
+    if eos_token_id is None:
+        eos_token_id = 35   # From vocab: "eos": 35
     
     # Encode input
     encoder_outputs, state_h, state_c = model.encoder(encoder_inputs)
@@ -1332,12 +1360,33 @@ def translate_sentence(model, sentence, bpe_tokenizer, max_eng_length, device='c
             # Use predicted token as next input
             decoder_input = torch.tensor([[predicted_token_id]], device=device)
     
-    # Convert tokens to text using BPE tokenizer
+    # Convert tokens to text using BPE tokenizer with cleaning
     if not generated_tokens:
-        return ""
+        return "<empty>"
     
-    translation = bpe_tokenizer.decode(generated_tokens)
-    return translation.strip()
+    # Filter out special tokens for cleaner output
+    filtered_tokens = []
+    special_tokens = {0, 1, 2, 3, 35, 36}  # PAD, UNK, [SOS], [EOS], eos, sos
+    
+    for token_id in generated_tokens:
+        # Skip special tokens for cleaner output
+        if token_id not in special_tokens:
+            filtered_tokens.append(token_id)
+    
+    if filtered_tokens:
+        translation = bpe_tokenizer.decode(filtered_tokens)
+    else:
+        # If all tokens were special, decode everything
+        translation = bpe_tokenizer.decode(generated_tokens)
+    
+    # Clean up the translation
+    translation = translation.strip()
+    # Remove any remaining special token text
+    for special_text in ['[SOS]', '[EOS]', '[PAD]', '[UNK]', 'sos', 'eos']:
+        translation = translation.replace(special_text, '')
+    translation = translation.strip()
+    
+    return translation if translation else "<no translation>"
 
 
 def generate(sentence, model, data_dict, device='cpu'):
