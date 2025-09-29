@@ -1,0 +1,237 @@
+{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [
+    {
+      "id": 0,
+      "content": "[PAD]",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 1,
+      "content": "[UNK]",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 2,
+      "content": "[SOS]",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 3,
+      "content": "[EOS]",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    }
+  ],
+  "normalizer": null,
+  "pre_tokenizer": {
+    "type": "Whitespace"
+  },
+  "post_processor": null,
+  "decoder": null,
+  "model": {
+    "type": "BPE",
+    "dropout": null,
+    "unk_token": "[UNK]",
+    "continuing_subword_prefix": null,
+    "end_of_word_suffix": null,
+    "fuse_unk": false,
+    "byte_fallback": false,
+    "ignore_merges": false,
+    "vocab": {
+      "[PAD]": 0,
+      "[UNK]": 1,
+      "[SOS]": 2,
+      "[EOS]": 3,
+      "'": 4,
+      "I": 5,
+      "a": 6,
+      "b": 7,
+      "c": 8,
+      "d": 9,
+      "e": 10,
+      "f": 11,
+      "g": 12,
+      "h": 13,
+      "i": 14,
+      "j": 15,
+      "k": 16,
+      "l": 17,
+      "m": 18,
+      "n": 19,
+      "o": 20,
+      "q": 21,
+      "r": 22,
+      "s": 23,
+      "t": 24,
+      "u": 25,
+      "v": 26,
+      "w": 27,
+      "y": 28,
+      "z": 29,
+      "à": 30,
+      "é": 31,
+      "ô": 32,
+      "ù": 33,
+      "os": 34,
+      "eos": 35,
+      "sos": 36,
+      "ou": 37,
+      "re": 38,
+      "you": 39,
+      "en": 40,
+      "at": 41,
+      "in": 42,
+      "om": 43,
+      "am": 44,
+      "are": 45,
+      "bi": 46,
+      "bo": 47,
+      "er": 48,
+      "ez": 49,
+      "go": 50,
+      "ha": 51,
+      "is": 52,
+      "od": 53,
+      "rn": 54,
+      "vo": 55,
+      "vou": 56,
+      "wh": 57,
+      "ent": 58,
+      "bon": 59,
+      "good": 60,
+      "vous": 61
+    },
+    "merges": [
+      [
+        "o",
+        "s"
+      ],
+      [
+        "e",
+        "os"
+      ],
+      [
+        "s",
+        "os"
+      ],
+      [
+        "o",
+        "u"
+      ],
+      [
+        "r",
+        "e"
+      ],
+      [
+        "y",
+        "ou"
+      ],
+      [
+        "e",
+        "n"
+      ],
+      [
+        "a",
+        "t"
+      ],
+      [
+        "i",
+        "n"
+      ],
+      [
+        "o",
+        "m"
+      ],
+      [
+        "a",
+        "m"
+      ],
+      [
+        "a",
+        "re"
+      ],
+      [
+        "b",
+        "i"
+      ],
+      [
+        "b",
+        "o"
+      ],
+      [
+        "e",
+        "r"
+      ],
+      [
+        "e",
+        "z"
+      ],
+      [
+        "g",
+        "o"
+      ],
+      [
+        "h",
+        "a"
+      ],
+      [
+        "i",
+        "s"
+      ],
+      [
+        "o",
+        "d"
+      ],
+      [
+        "r",
+        "n"
+      ],
+      [
+        "v",
+        "o"
+      ],
+      [
+        "v",
+        "ou"
+      ],
+      [
+        "w",
+        "h"
+      ],
+      [
+        "en",
+        "t"
+      ],
+      [
+        "bo",
+        "n"
+      ],
+      [
+        "go",
+        "od"
+      ],
+      [
+        "vou",
+        "s"
+      ]
+    ]
+  }
+}

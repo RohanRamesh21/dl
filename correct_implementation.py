@@ -14,6 +14,12 @@ from collections import Counter
 import re
 from sklearn.model_selection import train_test_split
 
+# BPE Tokenization imports
+from tokenizers import Tokenizer
+from tokenizers.models import BPE
+from tokenizers.trainers import BpeTrainer
+from tokenizers.pre_tokenizers import Whitespace
+
 # Smart tqdm import for both terminal and notebook environments
 try:
     # Check if we're in a Jupyter environment
@@ -685,62 +691,86 @@ class EncoderDecoderModel:
 
 
 # Data preprocessing utilities (using PyTorch tensors)
-class Tokenizer:
-    """Custom tokenizer matching TensorFlow's behavior"""
+
+# BPE Tokenizer utilities
+def create_and_train_bpe_tokenizer(texts, vocab_size=30000, tokenizer_path="bpe_tokenizer.json"):
+    """
+    Create and train a BPE tokenizer on the provided texts.
     
-    def __init__(self, filters='', lower=True):
-        self.filters = filters
-        self.lower = lower
-        self.word_index = {}
-        self.index_word = {}
-        self.word_counts = Counter()
-        self._index_counter = 1  # Reserve 0 for padding
+    Args:
+        texts: List of text strings to train on
+        vocab_size: Target vocabulary size (default: 30,000)
+        tokenizer_path: Path to save the trained tokenizer
     
-    def _preprocess_text(self, text):
-        if self.lower:
-            text = text.lower()
-        if self.filters:
-            translator = str.maketrans('', '', self.filters)
-            text = text.translate(translator)
-        return text
+    Returns:
+        Trained BPE tokenizer
+    """
+    print(f"🔤 Training BPE tokenizer with vocab_size={vocab_size}...")
     
-    def fit_on_texts(self, texts):
-        # Ensure special tokens are always in vocabulary
-        for special in ['sos', 'eos']:
-            if special not in self.word_index:
-                self.word_index[special] = self._index_counter
-                self.index_word[self._index_counter] = special
-                self._index_counter += 1
-        
-        for text in texts:
-            words = self._preprocess_text(text).split()
-            for word in words:
-                self.word_counts[word] += 1
-        
-        # Create word index based on frequency
-        sorted_words = sorted(self.word_counts.items(), key=lambda x: (-x[1], x[0]))
-        
-        for word, count in sorted_words:
-            if word not in self.word_index:
-                self.word_index[word] = self._index_counter
-                self.index_word[self._index_counter] = word
-                self._index_counter += 1
+    # Initialize BPE tokenizer
+    tokenizer = Tokenizer(BPE(unk_token="[UNK]"))
+    tokenizer.pre_tokenizer = Whitespace()
     
-    def texts_to_sequences(self, texts):
-        sequences = []
-        for text in texts:
-            words = self._preprocess_text(text).split()
-            sequence = [self.word_index.get(word, 0) for word in words]  # 0 for unknown
-            sequences.append(sequence)
-        return sequences
+    # Define special tokens
+    special_tokens = ["[PAD]", "[UNK]", "[SOS]", "[EOS]"]
     
-    def sequences_to_texts(self, sequences):
-        texts = []
-        for sequence in sequences:
-            words = [self.index_word.get(idx, '') for idx in sequence if idx > 0]
-            text = ' '.join(words)
-            texts.append(text)
-        return texts
+    # Initialize trainer
+    trainer = BpeTrainer(
+        vocab_size=vocab_size,
+        special_tokens=special_tokens,
+        min_frequency=2,
+        show_progress=True
+    )
+    
+    # Train tokenizer
+    tokenizer.train_from_iterator(texts, trainer)
+    
+    # Save tokenizer
+    tokenizer.save(tokenizer_path)
+    print(f"✅ BPE tokenizer trained and saved to {tokenizer_path}")
+    print(f"📊 Final vocabulary size: {tokenizer.get_vocab_size()}")
+    
+    return tokenizer
+
+def load_bpe_tokenizer(tokenizer_path="bpe_tokenizer.json"):
+    """
+    Load a previously trained BPE tokenizer.
+    
+    Args:
+        tokenizer_path: Path to the saved tokenizer
+    
+    Returns:
+        Loaded BPE tokenizer
+    """
+    try:
+        tokenizer = Tokenizer.from_file(tokenizer_path)
+        print(f"✅ Loaded BPE tokenizer from {tokenizer_path}")
+        print(f"📊 Vocabulary size: {tokenizer.get_vocab_size()}")
+        return tokenizer
+    except FileNotFoundError:
+        print(f"❌ Tokenizer file {tokenizer_path} not found!")
+        return None
+
+def get_or_create_bpe_tokenizer(texts, vocab_size=30000, tokenizer_path="bpe_tokenizer.json", force_retrain=False):
+    """
+    Get existing BPE tokenizer or create a new one if it doesn't exist.
+    
+    Args:
+        texts: Training texts (used only if tokenizer doesn't exist)
+        vocab_size: Target vocabulary size
+        tokenizer_path: Path to save/load tokenizer
+        force_retrain: Force retraining even if tokenizer exists
+    
+    Returns:
+        BPE tokenizer instance
+    """
+    if not force_retrain and os.path.exists(tokenizer_path):
+        tokenizer = load_bpe_tokenizer(tokenizer_path)
+        if tokenizer is not None:
+            return tokenizer
+    
+    print(f"🔄 Creating new BPE tokenizer...")
+    return create_and_train_bpe_tokenizer(texts, vocab_size, tokenizer_path)
 
 
 def pad_sequences(sequences, maxlen=None, padding='post', value=0):
@@ -928,18 +958,25 @@ def prepare_data(data_file_path=None, sample_size=None, use_dummy_data=False):
     print(f"Training samples: {len(eng_train)}")
     print(f"Validation samples: {len(eng_val)}")
     
-    # Create tokenizers
-    eng_tokenizer = Tokenizer()
-    fre_tokenizer = Tokenizer()
+    # Create BPE tokenizers
+    print("🔤 Setting up BPE tokenizers...")
     
-    eng_tokenizer.fit_on_texts(eng_train)
-    fre_tokenizer.fit_on_texts(fre_train)
+    # Combine training texts for tokenizer training
+    combined_texts = list(eng_train) + list(fre_train)
     
-    # Convert to sequences
-    eng_train_seq = eng_tokenizer.texts_to_sequences(eng_train)
-    eng_val_seq = eng_tokenizer.texts_to_sequences(eng_val)
-    fre_train_seq = fre_tokenizer.texts_to_sequences(fre_train)
-    fre_val_seq = fre_tokenizer.texts_to_sequences(fre_val)
+    # Create or load BPE tokenizer (shared for both English and French)
+    bpe_tokenizer = get_or_create_bpe_tokenizer(
+        texts=combined_texts,
+        vocab_size=30000,
+        tokenizer_path="bpe_tokenizer.json"
+    )
+    
+    # Convert to sequences using BPE tokenizer
+    print("🔤 Tokenizing sequences...")
+    eng_train_seq = [bpe_tokenizer.encode(text).ids for text in eng_train]
+    eng_val_seq = [bpe_tokenizer.encode(text).ids for text in eng_val]
+    fre_train_seq = [bpe_tokenizer.encode(text).ids for text in fre_train]
+    fre_val_seq = [bpe_tokenizer.encode(text).ids for text in fre_val]
     
     # Calculate max lengths
     max_eng_length = max(len(seq) for seq in eng_train_seq)
@@ -954,21 +991,25 @@ def prepare_data(data_file_path=None, sample_size=None, use_dummy_data=False):
     fre_train_pad = pad_sequences(fre_train_seq, maxlen=max_fre_length, padding='post')
     fre_val_pad = pad_sequences(fre_val_seq, maxlen=max_fre_length, padding='post')
     
-    # Extract SOS and EOS token IDs
-    sos_id = fre_tokenizer.word_index.get('sos', None)
-    eos_id = fre_tokenizer.word_index.get('eos', None)
+    # Extract special token IDs from BPE tokenizer
+    pad_id = bpe_tokenizer.token_to_id("[PAD]")
+    unk_id = bpe_tokenizer.token_to_id("[UNK]")
+    sos_id = bpe_tokenizer.token_to_id("[SOS]")
+    eos_id = bpe_tokenizer.token_to_id("[EOS]")
+    
+    print(f"📊 Special token IDs: PAD={pad_id}, UNK={unk_id}, SOS={sos_id}, EOS={eos_id}")
     
     return {
         'eng_train_pad': eng_train_pad,
         'eng_val_pad': eng_val_pad,
         'fre_train_pad': fre_train_pad,
         'fre_val_pad': fre_val_pad,
-        'eng_tokenizer': eng_tokenizer,
-        'fre_tokenizer': fre_tokenizer,
-        'eng_vocab_size': len(eng_tokenizer.word_index) + 1,
-        'fre_vocab_size': len(fre_tokenizer.word_index) + 1,
+        'bpe_tokenizer': bpe_tokenizer,  # Single tokenizer for both languages
+        'vocab_size': bpe_tokenizer.get_vocab_size(),  # Same vocab size for both
         'max_eng_length': max_eng_length,
         'max_fre_length': max_fre_length,
+        'pad_id': pad_id,
+        'unk_id': unk_id,
         'sos_id': sos_id,
         'eos_id': eos_id
     }
@@ -987,13 +1028,13 @@ def train_model_enhanced(data_file_path=None, epochs=10, batch_size=64, embeddin
     print("Loading and preprocessing data...")
     data_dict = prepare_data(data_file_path, sample_size, use_dummy_data)
     
-    print(f"English vocabulary size: {data_dict['eng_vocab_size']}")
-    print(f"French vocabulary size: {data_dict['fre_vocab_size']}")
+    print(f"Vocabulary size: {data_dict['vocab_size']}")
+    print(f"Special tokens - SOS: {data_dict['sos_id']}, EOS: {data_dict['eos_id']}")
     
     # Create model
     model = EncoderDecoderModel(
-        src_vocab_size=data_dict['eng_vocab_size'],
-        tgt_vocab_size=data_dict['fre_vocab_size'],
+        src_vocab_size=data_dict['vocab_size'],
+        tgt_vocab_size=data_dict['vocab_size'],
         embedding_dim=embedding_dim,
         lstm_units=lstm_units,
         encoder_num_layers=encoder_num_layers,
@@ -1195,129 +1236,28 @@ def train_model_enhanced(data_file_path=None, epochs=10, batch_size=64, embeddin
                 break
     
     return model, data_dict, history
-    """Load and prepare translation data"""
-    if use_dummy_data or data_file_path is None:
-        # Use dummy data for testing
-        english = np.array([
-            "hello world", "how are you", "what is your name", "good morning",
-            "thank you", "see you later", "have a nice day", "I am fine",
-            "where are you from", "what time is it", "nice to meet you", "goodbye"
-        ])
-        french = np.array([
-            "bonjour monde", "comment allez vous", "quel est votre nom", "bon matin",
-            "merci", "à bientôt", "bonne journée", "je vais bien", 
-            "d'où venez vous", "quelle heure est il", "enchanté de vous rencontrer", "au revoir"
-        ])
-    else:
-        # Load real dataset
-        print(f"Loading data from {data_file_path}...")
-        try:
-            dataset = pd.read_csv(data_file_path)
-            print(f"Dataset shape: {dataset.shape}")
-            print(f"Columns: {dataset.columns.tolist()}")
-            
-            # Handle different possible column names
-            eng_col = None
-            fre_col = None
-            
-            for col in dataset.columns:
-                if 'english' in col.lower() or 'eng' in col.lower():
-                    eng_col = col
-                if 'french' in col.lower() or 'fre' in col.lower():
-                    fre_col = col
-            
-            if eng_col is None or fre_col is None:
-                print("Warning: Could not find English/French columns, using first two columns")
-                eng_col = dataset.columns[0]
-                fre_col = dataset.columns[1]
-            
-            print(f"Using columns: English='{eng_col}', French='{fre_col}'")
-            
-            # Clean data
-            dataset = dataset.dropna(subset=[eng_col, fre_col])
-            dataset = dataset.drop_duplicates(subset=[eng_col, fre_col])
-            
-            print(f"After cleaning: {len(dataset)} samples")
-            
-            if sample_size and sample_size < len(dataset):
-                dataset = dataset.sample(sample_size, random_state=42)
-                print(f"Sampled {sample_size} examples")
-            
-            english = np.array(dataset[eng_col])
-            french = np.array(dataset[fre_col])
-            
-        except Exception as e:
-            print(f"Error loading data: {e}")
-            print("Falling back to dummy data...")
-            return prepare_data(use_dummy_data=True)
-    
-    # Add SOS and EOS tokens to French sentences
-    french = np.array(['sos ' + sent + ' eos' for sent in french])
-    
-    print(f"Total samples: {len(english)}")
-    print(f"Sample English: {english[0]}")
-    print(f"Sample French: {french[0]}")
-    
-    # Split data
-    eng_train, eng_val, fre_train, fre_val = train_test_split(
-        english, french, test_size=0.2, random_state=42
-    )
-    
-    print(f"Training samples: {len(eng_train)}")
-    print(f"Validation samples: {len(eng_val)}")
-    
-    # Create tokenizers
-    eng_tokenizer = Tokenizer()
-    fre_tokenizer = Tokenizer()
-    
-    eng_tokenizer.fit_on_texts(eng_train)
-    fre_tokenizer.fit_on_texts(fre_train)
-    
-    # Convert to sequences
-    eng_train_seq = eng_tokenizer.texts_to_sequences(eng_train)
-    eng_val_seq = eng_tokenizer.texts_to_sequences(eng_val)
-    fre_train_seq = fre_tokenizer.texts_to_sequences(fre_train)
-    fre_val_seq = fre_tokenizer.texts_to_sequences(fre_val)
-    
-    # Calculate max lengths
-    max_eng_length = max(len(seq) for seq in eng_train_seq)
-    max_fre_length = max(len(seq) for seq in fre_train_seq)
-    
-    print(f"Max English length: {max_eng_length}")
-    print(f"Max French length: {max_fre_length}")
-    
-    # Pad sequences
-    eng_train_pad = pad_sequences(eng_train_seq, maxlen=max_eng_length, padding='post')
-    eng_val_pad = pad_sequences(eng_val_seq, maxlen=max_eng_length, padding='post')
-    fre_train_pad = pad_sequences(fre_train_seq, maxlen=max_fre_length, padding='post')
-    fre_val_pad = pad_sequences(fre_val_seq, maxlen=max_fre_length, padding='post')
-    
-    return {
-        'eng_train_pad': eng_train_pad,
-        'eng_val_pad': eng_val_pad,
-        'fre_train_pad': fre_train_pad,
-        'fre_val_pad': fre_val_pad,
-        'eng_tokenizer': eng_tokenizer,
-        'fre_tokenizer': fre_tokenizer,
-        'eng_vocab_size': len(eng_tokenizer.word_index) + 1,
-        'fre_vocab_size': len(fre_tokenizer.word_index) + 1,
-        'max_eng_length': max_eng_length,
-        'max_fre_length': max_fre_length
-    }
 
 
-def translate_sentence(model, sentence, eng_tokenizer, fre_tokenizer, max_eng_length, device='cpu', max_output_length=30, temperature=0.7):
-    """Translation function that matches training step-by-step approach"""
+def translate_sentence(model, sentence, bpe_tokenizer, max_eng_length, device='cpu', max_output_length=30, temperature=0.7):
+    """Translation function using BPE tokenizer"""
     model.train = False
     
-    # Tokenize and pad input
-    sequence = eng_tokenizer.texts_to_sequences([sentence])
-    padded = pad_sequences(sequence, maxlen=max_eng_length, padding='post')
-    encoder_inputs = padded.to(device)
+    # Tokenize and pad input using BPE tokenizer
+    encoded = bpe_tokenizer.encode(sentence)
+    sequence = encoded.ids
     
-    # Get special tokens from tokenizer
-    sos_token_id = fre_tokenizer.word_index['sos']  # Use direct access since we ensure they exist
-    eos_token_id = fre_tokenizer.word_index['eos']  # Use direct access since we ensure they exist
+    # Pad sequence manually
+    if len(sequence) > max_eng_length:
+        sequence = sequence[:max_eng_length]
+    else:
+        pad_id = bpe_tokenizer.token_to_id("[PAD]")
+        sequence = sequence + [pad_id] * (max_eng_length - len(sequence))
+    
+    encoder_inputs = torch.tensor([sequence], dtype=torch.long, device=device)
+    
+    # Get special tokens from BPE tokenizer
+    sos_token_id = bpe_tokenizer.token_to_id("[SOS]")
+    eos_token_id = bpe_tokenizer.token_to_id("[EOS]")
     
     # Encode input
     encoder_outputs, state_h, state_c = model.encoder(encoder_inputs)
@@ -1392,21 +1332,20 @@ def translate_sentence(model, sentence, eng_tokenizer, fre_tokenizer, max_eng_le
             # Use predicted token as next input
             decoder_input = torch.tensor([[predicted_token_id]], device=device)
     
-    # Convert tokens to text
+    # Convert tokens to text using BPE tokenizer
     if not generated_tokens:
         return ""
     
-    translation = fre_tokenizer.sequences_to_texts([generated_tokens])[0]
+    translation = bpe_tokenizer.decode(generated_tokens)
     return translation.strip()
 
 
 def generate(sentence, model, data_dict, device='cpu'):
-    """Simple generate function for easy usage"""
+    """Simple generate function for easy usage with BPE tokenizer"""
     return translate_sentence(
         model=model,
         sentence=sentence,
-        eng_tokenizer=data_dict['eng_tokenizer'],
-        fre_tokenizer=data_dict['fre_tokenizer'],
+        bpe_tokenizer=data_dict['bpe_tokenizer'],
         max_eng_length=data_dict['max_eng_length'],
         device=device
     )
