@@ -1481,7 +1481,7 @@ def train_model_enhanced(data_file_path=None, epochs=10, batch_size=64, embeddin
     return model, data_dict, history
 
 
-def prepare_data_old(data_file_path=None, sample_size=None, use_dummy_data=False):
+def prepare_data(data_file_path=None, sample_size=None, use_dummy_data=False):
     if use_dummy_data or data_file_path is None:
         # Use dummy data for testing
         english = np.array([
