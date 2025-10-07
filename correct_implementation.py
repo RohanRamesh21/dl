@@ -855,6 +855,95 @@ def train_step(model, encoder_inputs, decoder_inputs, targets, optimizer, teache
     return loss.item(), accuracy.item()
 
 
+# Model saving and loading utilities
+def save_model(model, data_dict, history, filepath, epoch, val_acc, val_loss):
+    """Save model state, data dictionary, and training history"""
+    save_data = {
+        'model_state': {
+            'encoder': {
+                'embedding_weight': model.encoder.embedding.weight.data.clone(),
+                'lstm_params': [param.data.clone() for param in model.encoder.lstm.parameters()]
+            },
+            'decoder': {
+                'embedding_weight': model.decoder.embedding.weight.data.clone(),
+                'lstm_params': [param.data.clone() for param in model.decoder.lstm.parameters()],
+                'attention_params': [param.data.clone() for param in model.decoder.attention.parameters()],
+                'output_dense_params': [param.data.clone() for param in model.decoder.output_dense.parameters()]
+            }
+        },
+        'model_config': {
+            'src_vocab_size': model.src_vocab_size,
+            'tgt_vocab_size': model.tgt_vocab_size,
+            'embedding_dim': model.embedding_dim,
+            'lstm_units': model.lstm_units,
+            'encoder_num_layers': model.encoder_num_layers,
+            'decoder_num_layers': model.decoder_num_layers,
+            'dropout_rate': model.dropout_rate,
+            'bidirectional': model.bidirectional
+        },
+        'data_dict': data_dict,
+        'history': history,
+        'epoch': epoch,
+        'val_acc': val_acc,
+        'val_loss': val_loss
+    }
+    
+    # Add projection layer parameters if they exist
+    if model.decoder.h_projection is not None:
+        save_data['model_state']['decoder']['h_projection_params'] = [param.data.clone() for param in model.decoder.h_projection.parameters()]
+        save_data['model_state']['decoder']['c_projection_params'] = [param.data.clone() for param in model.decoder.c_projection.parameters()]
+    
+    torch.save(save_data, filepath)
+    print(f"Model saved to {filepath} (Epoch {epoch}, Val Acc: {val_acc:.4f}, Val Loss: {val_loss:.4f})")
+
+
+def load_model(filepath, device='cpu'):
+    """Load saved model state and return model, data_dict, and history"""
+    print(f"Loading model from {filepath}...")
+    
+    save_data = torch.load(filepath, map_location=device)
+    
+    # Recreate model
+    config = save_data['model_config']
+    model = EncoderDecoderModel(
+        src_vocab_size=config['src_vocab_size'],
+        tgt_vocab_size=config['tgt_vocab_size'],
+        embedding_dim=config['embedding_dim'],
+        lstm_units=config['lstm_units'],
+        encoder_num_layers=config['encoder_num_layers'],
+        decoder_num_layers=config['decoder_num_layers'],
+        dropout_rate=config['dropout_rate'],
+        bidirectional=config['bidirectional'],
+        device=device
+    )
+    model.to(device)
+    
+    # Load encoder weights
+    model.encoder.embedding.weight.data = save_data['model_state']['encoder']['embedding_weight'].to(device)
+    for param, saved_param in zip(model.encoder.lstm.parameters(), save_data['model_state']['encoder']['lstm_params']):
+        param.data = saved_param.to(device)
+    
+    # Load decoder weights
+    model.decoder.embedding.weight.data = save_data['model_state']['decoder']['embedding_weight'].to(device)
+    for param, saved_param in zip(model.decoder.lstm.parameters(), save_data['model_state']['decoder']['lstm_params']):
+        param.data = saved_param.to(device)
+    for param, saved_param in zip(model.decoder.attention.parameters(), save_data['model_state']['decoder']['attention_params']):
+        param.data = saved_param.to(device)
+    for param, saved_param in zip(model.decoder.output_dense.parameters(), save_data['model_state']['decoder']['output_dense_params']):
+        param.data = saved_param.to(device)
+    
+    # Load projection layer weights if they exist
+    if 'h_projection_params' in save_data['model_state']['decoder']:
+        for param, saved_param in zip(model.decoder.h_projection.parameters(), save_data['model_state']['decoder']['h_projection_params']):
+            param.data = saved_param.to(device)
+        for param, saved_param in zip(model.decoder.c_projection.parameters(), save_data['model_state']['decoder']['c_projection_params']):
+            param.data = saved_param.to(device)
+    
+    print(f"Model loaded successfully from epoch {save_data['epoch']} with val_acc: {save_data['val_acc']:.4f}")
+    
+    return model, save_data['data_dict'], save_data['history']
+
+
 # Complete training pipeline
 def prepare_data(data_file_path=None, sample_size=None, use_dummy_data=False):
     """Load and prepare translation data"""
@@ -977,7 +1066,8 @@ def prepare_data(data_file_path=None, sample_size=None, use_dummy_data=False):
 def train_model_enhanced(data_file_path=None, epochs=10, batch_size=64, embedding_dim=256,
                         lstm_units=256, learning_rate=0.001, device='cpu', sample_size=None, 
                         use_dummy_data=False, teacher_forcing_schedule='linear',
-                        encoder_num_layers=1, decoder_num_layers=1, dropout_rate=0.0, bidirectional=False):
+                        encoder_num_layers=1, decoder_num_layers=1, dropout_rate=0.0, bidirectional=False,
+                        save_path='best_model.pt'):
     """Enhanced training pipeline with teacher forcing scheduling"""
     print("=" * 60)
     print("ENHANCED NEURAL MACHINE TRANSLATION TRAINING")
@@ -1041,6 +1131,7 @@ def train_model_enhanced(data_file_path=None, epochs=10, batch_size=64, embeddin
     }
     
     best_val_loss = float('inf')
+    best_val_acc = 0.0
     patience_counter = 0
     
     # Teacher forcing scheduling functions
@@ -1184,15 +1275,30 @@ def train_model_enhanced(data_file_path=None, epochs=10, batch_size=64, embeddin
               f"val_loss: {avg_val_loss:.4f} - val_acc: {avg_val_acc:.4f} - "
               f"lr: {current_lr:.2e} - tf: {tf_ratio:.3f}")
         
-        # Early stopping
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
+        # Model saving and early stopping
+        improved = False
+        if avg_val_acc > best_val_acc:
+            best_val_acc = avg_val_acc
+            improved = True
+            # Save the best model
+            save_model(model, data_dict, history, save_path, epoch+1, avg_val_acc, avg_val_loss)
             patience_counter = 0
+        elif avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            # Only reset patience if loss improved but accuracy didn't
+            if not improved:
+                patience_counter = 0
         else:
             patience_counter += 1
-            if patience_counter >= 7:  # Increased patience for teacher forcing
-                print(f"\nEarly stopping after {epoch+1} epochs (no improvement for 7 epochs)")
-                break
+        
+        if patience_counter >= 7:  # Increased patience for teacher forcing
+            print(f"\nEarly stopping after {epoch+1} epochs (no improvement for 7 epochs)")
+            print(f"Best validation accuracy: {best_val_acc:.4f}")
+            break
+    
+    print(f"\nTraining completed!")
+    print(f"Best validation accuracy achieved: {best_val_acc:.4f}")
+    print(f"Best model saved to: {save_path}")
     
     return model, data_dict, history
     """Load and prepare translation data"""
@@ -1410,3 +1516,40 @@ def generate(sentence, model, data_dict, device='cpu'):
         max_eng_length=data_dict['max_eng_length'],
         device=device
     )
+
+
+def demo_model_saving():
+    """Demonstrate model saving and loading functionality"""
+    print("=" * 60)
+    print("MODEL SAVING AND LOADING DEMONSTRATION")
+    print("=" * 60)
+    
+    # Example of training and saving
+    print("1. Training a model with automatic saving of best accuracy...")
+    model, data_dict, history = train_model_enhanced(
+        use_dummy_data=True,
+        epochs=5,
+        batch_size=32,
+        save_path='demo_best_model.pt'
+    )
+    
+    print("\n2. Loading the saved best model...")
+    loaded_model, loaded_data_dict, loaded_history = load_model('demo_best_model.pt')
+    
+    print("\n3. Testing translation with loaded model...")
+    test_sentence = "hello world"
+    translation = generate(test_sentence, loaded_model, loaded_data_dict)
+    print(f"Translation: '{test_sentence}' -> '{translation}'")
+    
+    print("\n4. Checking that loaded model produces same results...")
+    translation_original = generate(test_sentence, model, data_dict)
+    print(f"Original model: '{test_sentence}' -> '{translation_original}'")
+    print(f"Loaded model:   '{test_sentence}' -> '{translation}'")
+    
+    print(f"\nModels produce same result: {translation == translation_original}")
+    
+    return loaded_model, loaded_data_dict, loaded_history
+
+
+if __name__ == "__main__":
+    demo_model_saving()
